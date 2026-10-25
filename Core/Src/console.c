@@ -18,6 +18,11 @@
 #define SPEED_STEP     10
 #define SPEED_DEFAULT  50
 
+/* Start the automatic test this long after boot (0 = disabled) */
+#ifndef CONSOLE_AUTOTEST_DELAY_MS
+#define CONSOLE_AUTOTEST_DELAY_MS  3000U
+#endif
+
 typedef enum
 {
   MODE_STOP = 0,
@@ -73,6 +78,9 @@ static drive_mode_t mode = MODE_STOP;
 static bool     test_running;
 static uint32_t test_index;
 static uint32_t test_step_start;
+
+static bool     autotest_pending;
+static uint32_t boot_tick;
 
 int __io_putchar(int ch)
 {
@@ -169,6 +177,15 @@ static void test_start_step(void)
          (unsigned)TEST_STEP_COUNT, s->name, s->left, s->right);
 }
 
+static void test_begin(void)
+{
+  mode = MODE_MANUAL;
+  test_running = true;
+  test_index = 0U;
+  printf("[TEST] start, send any line to abort\r\n");
+  test_start_step();
+}
+
 static void test_poll(void)
 {
   if (!test_running)
@@ -244,6 +261,12 @@ static void handle_line(char *line)
     p[--n] = '\0';
   }
 
+  if (autotest_pending)
+  {
+    autotest_pending = false;
+    printf("[TEST] auto-start cancelled\r\n");
+  }
+
   if (test_running)
   {
     test_running = false;
@@ -292,11 +315,7 @@ static void handle_line(char *line)
   }
   else if (strcmp(p, "t") == 0)
   {
-    mode = MODE_MANUAL;
-    test_running = true;
-    test_index = 0U;
-    printf("[TEST] start, send any line to abort\r\n");
-    test_start_step();
+    test_begin();
     return;
   }
   else if (strcmp(p, "wd on") == 0)  { motor_watchdog_enable(true); }
@@ -336,6 +355,13 @@ void console_init(UART_HandleTypeDef *huart)
 
   print_help();
   print_status();
+  boot_tick = HAL_GetTick();
+  autotest_pending = (CONSOLE_AUTOTEST_DELAY_MS > 0U);
+  if (autotest_pending)
+  {
+    printf("[TEST] auto-start in %u ms, send any line to cancel\r\n",
+           (unsigned)CONSOLE_AUTOTEST_DELAY_MS);
+  }
   printf("> ");
   rx_arm();
 }
@@ -372,6 +398,13 @@ void console_poll(void)
       putchar(c);
     }
     last_char = c;
+  }
+
+  if (autotest_pending && ((HAL_GetTick() - boot_tick) >= CONSOLE_AUTOTEST_DELAY_MS))
+  {
+    autotest_pending = false;
+    printf("\r\n");
+    test_begin();
   }
 
   test_poll();

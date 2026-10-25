@@ -72,6 +72,9 @@ Behavior:
    L=+0% R=+0% (IN1=0 IN2=0 IN3=0 IN4=0) speed=50% wd=off db=0 invL=0 invR=0
    ```
 
+**Auto test on boot:** 3 s after reset, the automatic test (`t`) starts by itself, so the robot can be run standalone from a power bank.
+Send any line (e.g. just Enter) before then to cancel. Change or disable it (0) with `CONSOLE_AUTOTEST_DELAY_MS` in `Core/Src/console.c`.
+
 Commands are case-insensitive. Press Enter after each one:
 
 | Command | Action |

@@ -18,6 +18,9 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "dma.h"
+#include "i2c.h"
+#include "i2s.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -27,6 +30,7 @@
 #include "motor.h"
 #include "console.h"
 #include "link.h"
+#include "alert.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -94,13 +98,17 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_TIM4_Init();
   MX_TIM6_Init();
   MX_USART3_UART_Init();
   MX_USART2_UART_Init();
+  MX_I2C1_Init();
+  MX_I2S2_Init();
   /* USER CODE BEGIN 2 */
   motor_init(&htim4, TIM_CHANNEL_3, TIM_CHANNEL_4);
   console_init(&huart3);
+  alert_init(&hi2s2);
   link_init(&huart2);
   HAL_TIM_Base_Start_IT(&htim6);
   /* USER CODE END 2 */
@@ -173,6 +181,22 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s)
+{
+  if (hi2s->Instance == SPI2)
+  {
+    alert_i2s_half_cplt();
+  }
+}
+
+void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s)
+{
+  if (hi2s->Instance == SPI2)
+  {
+    alert_i2s_cplt();
+  }
+}
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == TIM6)

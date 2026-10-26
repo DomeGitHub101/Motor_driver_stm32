@@ -10,6 +10,7 @@
 #include "motor.h"
 #include "link.h"
 #include "tof.h"
+#include "i2c.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,19 +127,20 @@ static bool rx_get(char *c)
 
 static void print_help(void)
 {
-  printf("\r\n--- L298N motor test console ---\r\n"
+  printf("\r\n--- Lower board FW " CONSOLE_FW_VERSION " (motor / ToF / voice / link) ---\r\n"
          "  w / s       forward / backward\r\n"
          "  a / d       spin left / spin right (in place)\r\n"
          "  x           stop\r\n"
          "  + / -       speed +/-10%% (applies to current mode)\r\n"
          "  L <n>       left side only, -100..100\r\n"
          "  R <n>       right side only, -100..100\r\n"
-         "  t           run automatic test (any input aborts)\r\n"
+         "  t           run automatic test (any input or a valid $M aborts)\r\n"
          "  wd on|off   enable/disable %u ms watchdog\r\n"
          "  db <n>      deadband 0..90 %%\r\n"
          "  inv l|r     toggle left/right invert\r\n"
          "  link        toggle printing of upper-board link ($M / output / level)\r\n"
          "  tof <mm>    simulate ToF distance, 'tof off' = real sensor\r\n"
+         "  i2c         scan I2C1 (PB8/PB9) for devices\r\n"
          "  st          status\r\n"
          "  h / ?       this help\r\n"
          "Motion commands override the upper board for %u ms.\r\n",
@@ -361,6 +363,22 @@ static void handle_line(char *line)
     printf("link print %s\r\n", link_debug_enabled() ? "on" : "off");
     return;
   }
+  else if (strcmp(p, "i2c") == 0)
+  {
+    int found = 0;
+
+    printf("I2C1 scan (7-bit):");
+    for (uint16_t a = 0x08U; a < 0x78U; a++)
+    {
+      if (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(a << 1), 1U, 2U) == HAL_OK)
+      {
+        printf(" 0x%02X", (unsigned)a);
+        found++;
+      }
+    }
+    printf(found ? "\r\n" : " none\r\n");
+    return;
+  }
   else if ((strncmp(p, "tof", 3) == 0) && ((p[3] == ' ') || (p[3] == '\0')))
   {
     if (strcmp(p + 3, " off") == 0)
@@ -402,14 +420,21 @@ void console_init(UART_HandleTypeDef *huart)
   setvbuf(stdout, NULL, _IONBF, 0);
 
   print_help();
-  print_status();
-  printf("> ");
   rx_arm();
 }
 
 void console_poll(void)
 {
+  static bool boot_status_done;
   char c;
+
+  /* first pass: every module is initialised, so the status is real */
+  if (!boot_status_done)
+  {
+    boot_status_done = true;
+    print_status();
+    printf("> ");
+  }
 
   while (rx_get(&c))
   {

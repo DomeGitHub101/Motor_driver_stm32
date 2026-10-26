@@ -9,7 +9,8 @@
   *   TX:    $O,level,dist_mm*XX     every 200 ms and on every level change
   *
   *   Drive priority:
-  *     level 3            -> motor_estop(), ignores everything (console too)
+  *     level 3            -> motor_estop(), ignores everything (console too);
+  *                           a ToF sensor error also counts as level 3
   *     level 2, mode != 2 -> no forward (left + right > 0 -> 0, 0)
   *     level 1, mode != 2 -> forward limited to LINK_LEVEL1_MAX_PCT per wheel
   *     mode 0             -> motor_set(0, 0)
@@ -303,10 +304,11 @@ static uint8_t level_of(uint32_t mm)
   return 0U;
 }
 
-/* Rise immediately, drop only when LINK_HYST_MM further than the threshold */
+/* Rise immediately, drop only when LINK_HYST_MM further than the threshold.
+ * A sensor error counts as level 3. */
 static uint8_t level_update(uint32_t mm, uint8_t cur)
 {
-  uint8_t raw = level_of(mm);
+  uint8_t raw = tof_ok() ? level_of(mm) : 3U;
   uint8_t hold;
 
   if (raw >= cur)
@@ -348,7 +350,7 @@ void link_init(UART_HandleTypeDef *huart)
 
   tof_init();
   obst_dist = tof_read_mm();
-  obst_level = level_of(obst_dist);
+  obst_level = level_update(obst_dist, 0U);
   tof_tick = HAL_GetTick();
   tx_pending = true;
 
@@ -363,6 +365,7 @@ void link_poll(void)
   bool level_changed = false;
 
   rx_process();
+  tof_poll();
   now = HAL_GetTick();
 
   if ((now - tof_tick) >= LINK_TOF_PERIOD_MS)
@@ -393,7 +396,8 @@ void link_poll(void)
     apply_drive();       /* re-apply the last $M with the new limits */
   }
 
-  alert_set(obst_level, (uint8_t)cmd_mode);
+  /* a broken sensor stops the wheels but is not a person to talk to */
+  alert_set(tof_ok() ? obst_level : 0U, (uint8_t)cmd_mode);
 
   if ((now - tx_tick) >= LINK_TX_PERIOD_MS)
   {
@@ -417,8 +421,9 @@ void link_poll(void)
     {
       printf("LINK rx=none");
     }
-    printf(" lvl=%u dist=%u ok=%lu bad=%lu%s\r\n", (unsigned)obst_level,
-           (unsigned)obst_dist, (unsigned long)rx_ok, (unsigned long)rx_bad,
+    printf(" lvl=%u dist=%u%s ok=%lu bad=%lu%s\r\n", (unsigned)obst_level,
+           (unsigned)obst_dist, tof_ok() ? "" : " TOF-ERR",
+           (unsigned long)rx_ok, (unsigned long)rx_bad,
            console_manual_active() ? " [console]" : "");
   }
 }

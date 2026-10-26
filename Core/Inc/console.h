@@ -14,6 +14,7 @@ extern "C" {
 #include "main.h"
 #include <stdbool.h>
 
+#define CONSOLE_FW_VERSION      "1.0.0"
 #define CONSOLE_MANUAL_HOLD_MS  2000U  /* console motion commands override the link this long */
 
 void console_init(UART_HandleTypeDef *huart);

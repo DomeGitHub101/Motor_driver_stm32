@@ -1,6 +1,6 @@
 # Motor_driver_stm32
 
-L298N motor driver test firmware for **NUCLEO-F767ZI** (STM32CubeIDE / CubeMX project),
+Lower-board firmware **v1.0.0** for **NUCLEO-F767ZI** (STM32CubeIDE / CubeMX project): L298N motor driver, front ToF, voice alert, and UART link to the upper board,
 for a 4WD skid-steer robot: the two right motors are in parallel on channel A (OUT1/OUT2) and the two left motors are in parallel on channel B (OUT3/OUT4).
 
 ## Hardware / wiring
@@ -21,12 +21,40 @@ for a 4WD skid-steer robot: the two right motors are in parallel on channel A (O
 - Power the motors from a separate battery on the L298N 12V input. Do not power motors from the Nucleo.
 - The console runs on USART3 (PD8/PD9), which is the ST-LINK Virtual COM Port on the USB cable. No extra wiring is needed.
 
+### Front ToF (VL53L0X module)
+
+| VL53L0X | NUCLEO-F767ZI |
+|---------|---------------|
+| VIN | 3V3 |
+| GND | GND |
+| SCL | PB8 (D15) |
+| SDA | PB9 (D14) |
+| XSHUT | PA0 |
+| GPIO1 | not connected |
+
+### Speaker (I2S amplifier, e.g. MAX98357A)
+
+| Amplifier | NUCLEO-F767ZI |
+|-----------|---------------|
+| BCLK | PD3 (I2S2_CK) |
+| LRC / WS | PB12 (I2S2_WS) |
+| DIN | PB15 (I2S2_SD) |
+| VIN | 5V |
+| GND | GND |
+
+- Connect the speaker (4–8 Ω) to the amplifier's + / − outputs only. Never connect either output to GND (BTL output).
+- If the board resets while a voice plays (weak USB / power bank), lower `ALERT_VOLUME_PERCENT` in `Core/Inc/alert.h` or give the amplifier its own 5 V supply.
+
 ## Configuration (Motor_driver.ioc)
 
 - SYSCLK 216 MHz (HSI + PLL), APB1 /4 (timer clock 108 MHz), APB2 /2
 - TIM4: PSC 107, ARR 999, PWM 1 kHz, PWM mode 1, ARR preload enabled
 - TIM6: PSC 10799, ARR 199, 20 ms interrupt for `motor_tick()`
-- USART3: 115200 8N1, interrupt enabled
+- USART3: 115200 8N1, interrupt enabled (console)
+- USART2: PD5/PD6, 115200 8N1, interrupt enabled (upper board)
+- I2C1: PB8/PB9, 100 kHz (ToF)
+- I2S2: master TX, Philips, 16-bit, 16 kHz, PD3/PB12/PB15, DMA1 Stream4 circular (speaker), PLLI2S 96 MHz
+- PA0: GPIO output `XSHUT`, initial Low
 
 ## Source layout
 
@@ -35,8 +63,10 @@ for a 4WD skid-steer robot: the two right motors are in parallel on channel A (O
 | `Core/Inc/motor.h`, `Core/Src/motor.c` | L298N driver: ramping, deadband, invert, watchdog, e-stop |
 | `Core/Inc/console.h`, `Core/Src/console.c` | Serial console on USART3, `printf` redirect, automatic test sequence |
 | `Core/Inc/link.h`, `Core/Src/link.c` | USART2 link to the upper board: `$M` commands in, `$O` obstacle status out, drive priority |
-| `Core/Inc/tof.h`, `Core/Src/tof.c` | ToF interface `tof_read_mm()`. Currently a stub that always returns 2000 mm (no object) |
-| `Core/Inc/alert.h`, `Core/Src/alert.c` | `alert_set(level, mode)` for the buzzer/speaker. Currently it only prints to the console |
+| `Core/Inc/tof.h`, `Core/Src/tof.c` | Front ToF: one VL53L0X in continuous mode, non-blocking `tof_poll()`, `tof_read_mm()`, `tof_ok()` |
+| `Core/Inc/vl53l0x_simple.h`, `Core/Src/vl53l0x_simple.c` | Minimal VL53L0X register driver (init sequence based on Pololu's library, MIT) |
+| `Core/Inc/alert.h`, `Core/Src/alert.c` | `alert_set(level, mode)`: plays voice clips on the I2S speaker |
+| `Core/Inc/voice500.h`, `voice1000.h`, `voice2000.h` | 16 kHz 16-bit mono PCM clips (included only by `alert.c`) |
 | `Core/Src/main.c` | Calls init/poll and HAL callbacks, edited in `USER CODE` sections only |
 
 ### Motor API
@@ -72,9 +102,9 @@ Behavior:
 
 1. Open the **STMicroelectronics STLink Virtual COM Port** at **115200, 8N1**.
 2. In Setup → Terminal, set New-line **Receive = AUTO** (or CR).
-3. Press the black RESET button on the board. The help text and a status line appear:
+3. Press the black RESET button on the board. You should see the banner (`--- Lower board FW 1.0.0 ... ---`), the help text, `TOF: VL53L0X ready`, and a status line:
    ```
-   L=+0% R=+0% (IN1=0 IN2=0 IN3=0 IN4=0) speed=50% wd=off db=45 invL=0 invR=0 lvl=0
+   L=+0% R=+0% (IN1=0 IN2=0 IN3=0 IN4=0) speed=50% wd=on db=45 invL=0 invR=0 lvl=0
    ```
 
 **Boot:** the wheels stay stopped (PWM = 0, IN1..IN4 = 0) until a command arrives. The automatic test never starts by itself: type `t` + Enter in the console.
@@ -95,6 +125,7 @@ Commands are case-insensitive. Press Enter after each one:
 | `inv l` / `inv r` | Toggle left/right invert |
 | `link` | Toggle printing of received `$M`, actual wheel output and obstacle level (max 2 lines/s) |
 | `tof <mm>` / `tof off` | Simulate a ToF distance / go back to the real sensor |
+| `i2c` | Scan I2C1 (PB8/PB9). The ToF should answer at `0x29`. `none` means a wiring or power problem |
 | `st` | Show status |
 | `h` / `?` | Help |
 
@@ -149,7 +180,8 @@ The upper board treats the lower board as lost if no `$O` arrives for over 1 s, 
 - The level rises immediately.
 - It drops only after the distance is 50 mm past the threshold (hysteresis).
 - Tune the thresholds with the `LINK_LEVEL*_MM` / `LINK_HYST_MM` macros in `Core/Inc/link.h`.
-- The real ToF driver is not chosen yet. Replace `tof_init()` / `tof_read_mm()` in `Core/Src/tof.c`.
+- Readings are clamped to 2000 mm (no object).
+- **Sensor error:** if init fails, or no new sample arrives for 300 ms, the level is forced to 3 (wheels stop) and `$O,3,0` is sent. The console prints `TOF: ...`, and the sensor is re-initialized every 2 s until it works. The speaker stays silent for a sensor error.
 
 ### Drive priority
 
@@ -163,14 +195,18 @@ Other rules:
 - **Watchdog:** on from boot. With no valid `$M` for 500 ms, the wheels ramp to 0. `motor_set()` feeds it on every valid `$M`, including mode 0.
 - **Console override:** a console motion command (`w` `s` `a` `d` `x` `+` `-` `L` `R`) wins over `$M` until 2 s after the last command typed. Level 3 still applies. The `t` test is the exception: a valid `$M` aborts it immediately, so with the upper board connected `t` stops right away.
 
-### Alert (buzzer/speaker, hardware not chosen yet)
+### Voice alert (speaker)
 
-`alert_set(level, mode)` in `Core/Src/alert.c` currently prints only:
-- Level 2: says "กรุณาหลบหน่อยครับ" once on entering the level.
-- Level 3: repeats every 3 s.
+| Level | Clip | Says | When |
+|-------|------|------|------|
+| 1 | `voice2000` | "ขอโทษครับ กรุณาหลบหน่อยครับ" | Once when the level rises to 1 |
+| 2 | `voice1000` | "กรุณาหลบหน่อยครับ" | Once when the level rises to 2 |
+| 3 | `voice500` | "หลบไปดิ้" | Every 3 s while at level 3 |
+
+- A voice plays only when the obstacle gets **closer** (the level rises). Moving away is silent.
 - Mode 2 (docking): silent at every level, because the ToF sees the table.
-
-To see the Thai text, set Tera Term to UTF-8 (Setup → General / Terminal → Coding).
+- Each alert is also printed on the console. To see the Thai text, set Tera Term to UTF-8 (Setup → General / Terminal → Coding).
+- Volume: `ALERT_VOLUME_PERCENT` in `Core/Inc/alert.h` (default 50).
 
 ### Testing the link with a USB-UART adapter instead of the upper board
 
@@ -205,12 +241,21 @@ goto loop
 
 | Console | Expected |
 |---------|----------|
-| `tof 800` | Level 1, forward drops from 60% to 30%, `$O,1,800*..` |
-| `tof 500` | Level 2, wheels stop, `ALERT L2` printed once |
-| `tof 200` | Level 3, e-stop, `ALERT L3` every 3 s |
-| `tof off` | Back to level 0, normal driving |
+| `tof 800` | Level 1, forward drops from 60% to 30%, `$O,1,800*..`, speaker: "ขอโทษครับ กรุณาหลบหน่อยครับ" |
+| `tof 500` | Level 2, wheels stop, speaker: "กรุณาหลบหน่อยครับ" once |
+| `tof 200` | Level 3, e-stop, speaker: "หลบไปดิ้" every 3 s |
+| `tof off` | Back to the real sensor. Put a hand in front of it to check the real levels |
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---------|--------------|
+| `TOF: init failed (err 10)` and `i2c` prints `none` | The sensor does not answer: loose or wrong SCL/SDA wire (SCL = D15/PB8, SDA = D14/PB9), no 3.3 V at the module, or XSHUT not on PA0. The wheels stay blocked (level 3) until it works. Type `tof 2000` to test the motors without the sensor. |
+| Stuck at level 3 with `dist` around 150 mm | Something is in front of the sensor: the protective film still on, a cable, the chassis, or the sensor tilted towards the floor. |
+| `bad=` rises while `rx=none` | Noise on USART2 RX (PD6 floating, upper board not connected), or wrong wiring/baud/GND to the upper board. |
+| Board resets while a voice plays | 5 V supply too weak for the amplifier. Lower `ALERT_VOLUME_PERCENT` or power the amplifier separately. |
+| Wheels run for only ~2.5 s from console commands | Expected: the watchdog is on. Use `wd off` for manual tests. |
 
 ## Roadmap
 
-- Real ToF sensor driver in `tof.c` (optionally on EXTI calling `motor_estop()`)
-- Real buzzer/speaker in `alert.c`
+- ToF GPIO1 on EXTI calling `motor_estop()` for a faster stop

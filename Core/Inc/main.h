@@ -57,6 +57,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define XSHUT_Pin GPIO_PIN_0
+#define XSHUT_GPIO_Port GPIOA
 #define IN2_Pin GPIO_PIN_12
 #define IN2_GPIO_Port GPIOF
 #define IN1_Pin GPIO_PIN_13

@@ -2,8 +2,10 @@
   ******************************************************************************
   * @file    motor.h
   * @brief   L298N dual H-bridge driver for a 4WD skid-steer base.
-  *          Left side  = channel A (IN1/IN2 + ENA)
-  *          Right side = channel B (IN3/IN4 + ENB)
+  *          Channel A = IN1/IN2 + ENA, channel B = IN3/IN4 + ENB.
+  *          Which robot side each channel drives is set by MOTOR_SWAP_SIDES
+  *          in motor.c (current wiring: A = right, B = left).
+  *          left/right in this API always mean the robot's real sides.
   ******************************************************************************
   */
 #ifndef MOTOR_H
@@ -21,13 +23,13 @@ extern "C" {
 #define MOTOR_RAMP_STEP     5     /* max change in % per tick */
 #define MOTOR_WATCHDOG_MS   500U  /* timeout without set/feed */
 
-/* Invert a whole side (1 = swap forward/backward). */
+/* Invert a whole real robot side (1 = swap forward/backward). */
 extern volatile uint8_t MOTOR_L_INVERT;
 extern volatile uint8_t MOTOR_R_INVERT;
 /* Minimum duty in %; when > 0, 1..100 % is mapped to deadband..100 %. */
 extern volatile uint8_t motor_deadband;
 
-void motor_init(TIM_HandleTypeDef *htim, uint32_t ch_left, uint32_t ch_right);
+void motor_init(TIM_HandleTypeDef *htim, uint32_t ch_a, uint32_t ch_b);  /* ENA, ENB channels */
 void motor_set(int left, int right);       /* -100..100 %, negative = reverse */
 void motor_get_target(int *left, int *right);
 void motor_tick(void);                     /* call from 20 ms timer ISR */

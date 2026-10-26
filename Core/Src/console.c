@@ -8,6 +8,8 @@
   */
 #include "console.h"
 #include "motor.h"
+#include "link.h"
+#include "tof.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,11 +19,6 @@
 #define LINE_MAX       48U
 #define SPEED_STEP     10
 #define SPEED_DEFAULT  50
-
-/* Start the automatic test this long after boot (0 = disabled) */
-#ifndef CONSOLE_AUTOTEST_DELAY_MS
-#define CONSOLE_AUTOTEST_DELAY_MS  3000U
-#endif
 
 typedef enum
 {
@@ -79,8 +76,8 @@ static bool     test_running;
 static uint32_t test_index;
 static uint32_t test_step_start;
 
-static bool     autotest_pending;
-static uint32_t boot_tick;
+static bool     manual_seen;
+static uint32_t manual_tick;
 
 int __io_putchar(int ch)
 {
@@ -140,8 +137,12 @@ static void print_help(void)
          "  wd on|off   enable/disable %u ms watchdog\r\n"
          "  db <n>      deadband 0..90 %%\r\n"
          "  inv l|r     toggle left/right invert\r\n"
+         "  link        toggle printing of upper-board link ($M / output / level)\r\n"
+         "  tof <mm>    simulate ToF distance, 'tof off' = real sensor\r\n"
          "  st          status\r\n"
-         "  h / ?       this help\r\n", (unsigned)MOTOR_WATCHDOG_MS);
+         "  h / ?       this help\r\n"
+         "Motion commands override the upper board for %u ms.\r\n",
+         (unsigned)MOTOR_WATCHDOG_MS, (unsigned)CONSOLE_MANUAL_HOLD_MS);
 }
 
 static void print_status(void)
@@ -149,9 +150,32 @@ static void print_status(void)
   char buf[64];
 
   motor_status_str(buf, sizeof(buf));
-  printf("%s speed=%d%% wd=%s db=%u invL=%u invR=%u\r\n", buf, speed,
+  printf("%s speed=%d%% wd=%s db=%u invL=%u invR=%u lvl=%u\r\n", buf, speed,
          motor_watchdog_is_enabled() ? "on" : "off",
-         (unsigned)motor_deadband, (unsigned)MOTOR_L_INVERT, (unsigned)MOTOR_R_INVERT);
+         (unsigned)motor_deadband, (unsigned)MOTOR_L_INVERT, (unsigned)MOTOR_R_INVERT,
+         (unsigned)link_obstacle_level());
+}
+
+static void manual_touch(void)
+{
+  manual_seen = true;
+  manual_tick = HAL_GetTick();
+}
+
+bool console_manual_active(void)
+{
+  return test_running ||
+         (manual_seen && ((HAL_GetTick() - manual_tick) < CONSOLE_MANUAL_HOLD_MS));
+}
+
+void console_link_takeover(void)
+{
+  if (test_running)
+  {
+    test_running = false;
+    mode = MODE_STOP;
+    printf("\r\n[TEST] aborted: upper board command received\r\n> ");
+  }
 }
 
 static void apply_mode(void)
@@ -261,17 +285,12 @@ static void handle_line(char *line)
     p[--n] = '\0';
   }
 
-  if (autotest_pending)
-  {
-    autotest_pending = false;
-    printf("[TEST] auto-start cancelled\r\n");
-  }
-
   if (test_running)
   {
     test_running = false;
     mode = MODE_STOP;
     motor_set(0, 0);
+    manual_touch();   /* hold the stop against the link */
     printf("[TEST] aborted\r\n");
     print_status();
     return;
@@ -282,16 +301,20 @@ static void handle_line(char *line)
     return;
   }
 
-  if (strcmp(p, "w") == 0)       { mode = MODE_FWD;    apply_mode(); }
-  else if (strcmp(p, "s") == 0)  { mode = MODE_BACK;   apply_mode(); }
-  else if (strcmp(p, "a") == 0)  { mode = MODE_SPIN_L; apply_mode(); }
-  else if (strcmp(p, "d") == 0)  { mode = MODE_SPIN_R; apply_mode(); }
-  else if (strcmp(p, "x") == 0)  { mode = MODE_STOP;   apply_mode(); }
+  if (strcmp(p, "w") == 0)       { mode = MODE_FWD;    manual_touch(); apply_mode(); }
+  else if (strcmp(p, "s") == 0)  { mode = MODE_BACK;   manual_touch(); apply_mode(); }
+  else if (strcmp(p, "a") == 0)  { mode = MODE_SPIN_L; manual_touch(); apply_mode(); }
+  else if (strcmp(p, "d") == 0)  { mode = MODE_SPIN_R; manual_touch(); apply_mode(); }
+  else if (strcmp(p, "x") == 0)  { mode = MODE_STOP;   manual_touch(); apply_mode(); }
   else if ((strcmp(p, "+") == 0) || (strcmp(p, "-") == 0))
   {
     speed += (p[0] == '+') ? SPEED_STEP : -SPEED_STEP;
     if (speed > 100) speed = 100;
     if (speed < 0)   speed = 0;
+    if (mode != MODE_MANUAL)
+    {
+      manual_touch();
+    }
     apply_mode();
   }
   else if (((p[0] == 'l') || (p[0] == 'r')) && ((p[1] == ' ') || isdigit((unsigned char)p[1]) || (p[1] == '-') || (p[1] == '+')))
@@ -311,6 +334,7 @@ static void handle_line(char *line)
       r = v;
     }
     mode = MODE_MANUAL;
+    manual_touch();
     motor_set(l, r);
   }
   else if (strcmp(p, "t") == 0)
@@ -331,6 +355,30 @@ static void handle_line(char *line)
   }
   else if (strcmp(p, "inv l") == 0) { MOTOR_L_INVERT = MOTOR_L_INVERT ? 0U : 1U; }
   else if (strcmp(p, "inv r") == 0) { MOTOR_R_INVERT = MOTOR_R_INVERT ? 0U : 1U; }
+  else if (strcmp(p, "link") == 0)
+  {
+    link_debug_toggle();
+    printf("link print %s\r\n", link_debug_enabled() ? "on" : "off");
+    return;
+  }
+  else if ((strncmp(p, "tof", 3) == 0) && ((p[3] == ' ') || (p[3] == '\0')))
+  {
+    if (strcmp(p + 3, " off") == 0)
+    {
+      tof_set_override(-1);
+      printf("tof: real sensor\r\n");
+    }
+    else if (parse_int(p + 3, &v) && (v >= 0) && (v <= 65535))
+    {
+      tof_set_override(v);
+      printf("tof: simulated %d mm\r\n", v);
+    }
+    else
+    {
+      printf("ERR: usage tof <mm> / tof off\r\n");
+      return;
+    }
+  }
   else if (strcmp(p, "st") == 0)    { /* status printed below */ }
   else if ((strcmp(p, "h") == 0) || (strcmp(p, "?") == 0))
   {
@@ -355,13 +403,6 @@ void console_init(UART_HandleTypeDef *huart)
 
   print_help();
   print_status();
-  boot_tick = HAL_GetTick();
-  autotest_pending = (CONSOLE_AUTOTEST_DELAY_MS > 0U);
-  if (autotest_pending)
-  {
-    printf("[TEST] auto-start in %u ms, send any line to cancel\r\n",
-           (unsigned)CONSOLE_AUTOTEST_DELAY_MS);
-  }
   printf("> ");
   rx_arm();
 }
@@ -398,13 +439,6 @@ void console_poll(void)
       putchar(c);
     }
     last_char = c;
-  }
-
-  if (autotest_pending && ((HAL_GetTick() - boot_tick) >= CONSOLE_AUTOTEST_DELAY_MS))
-  {
-    autotest_pending = false;
-    printf("\r\n");
-    test_begin();
   }
 
   test_poll();

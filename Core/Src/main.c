@@ -26,6 +26,7 @@
 /* USER CODE BEGIN Includes */
 #include "motor.h"
 #include "console.h"
+#include "link.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -96,9 +97,11 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM6_Init();
   MX_USART3_UART_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   motor_init(&htim4, TIM_CHANNEL_3, TIM_CHANNEL_4);
   console_init(&huart3);
+  link_init(&huart2);
   HAL_TIM_Base_Start_IT(&htim6);
   /* USER CODE END 2 */
 
@@ -110,6 +113,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     console_poll();
+    link_poll();
   }
   /* USER CODE END 3 */
 }
@@ -177,12 +181,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   }
 }
 
-/* Dispatch UART events by instance; add a case per UART (e.g. USART2 link to upper board) */
+/* Dispatch UART events by instance: USART3 = console, USART2 = upper board link */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART3)
   {
     console_rx_cplt();
+  }
+  else if (huart->Instance == USART2)
+  {
+    link_rx_cplt();
   }
 }
 
@@ -191,6 +199,10 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
   if (huart->Instance == USART3)
   {
     console_rx_error();
+  }
+  else if (huart->Instance == USART2)
+  {
+    link_rx_error();
   }
 }
 /* USER CODE END 4 */

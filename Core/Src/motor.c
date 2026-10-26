@@ -7,13 +7,20 @@
 #include "motor.h"
 #include <stdio.h>
 
+/* 1 = L298N channel A (IN1/IN2 + ENA) drives the RIGHT wheels and
+ *     channel B (IN3/IN4 + ENB) drives the LEFT wheels (current wiring).
+ * 0 = channel A = left, channel B = right. */
+#ifndef MOTOR_SWAP_SIDES
+#define MOTOR_SWAP_SIDES  1
+#endif
+
 volatile uint8_t MOTOR_L_INVERT = 0;
 volatile uint8_t MOTOR_R_INVERT = 0;
-volatile uint8_t motor_deadband = 0;
+volatile uint8_t motor_deadband = 45;   /* measured start: left 42 %, right 34 % */
 
 static TIM_HandleTypeDef *motor_htim;
-static uint32_t motor_ch_l;
-static uint32_t motor_ch_r;
+static uint32_t motor_ch_a;   /* ENA timer channel */
+static uint32_t motor_ch_b;   /* ENB timer channel */
 
 /* Logical values (before invert), in % */
 static volatile int16_t target_l, target_r;
@@ -83,12 +90,20 @@ static void apply_side(volatile int16_t *actual, volatile int8_t *phys_sign, uin
   *phys_sign = sign;
 }
 
+/* The only place that maps robot sides to bridge channels */
 static void apply_outputs(void)
 {
-  apply_side(&actual_l, &phys_sign_l, MOTOR_L_INVERT, motor_ch_l,
+#if MOTOR_SWAP_SIDES
+  apply_side(&actual_r, &phys_sign_r, MOTOR_R_INVERT, motor_ch_a,
              IN1_GPIO_Port, IN1_Pin, IN2_GPIO_Port, IN2_Pin);
-  apply_side(&actual_r, &phys_sign_r, MOTOR_R_INVERT, motor_ch_r,
+  apply_side(&actual_l, &phys_sign_l, MOTOR_L_INVERT, motor_ch_b,
              IN3_GPIO_Port, IN3_Pin, IN4_GPIO_Port, IN4_Pin);
+#else
+  apply_side(&actual_l, &phys_sign_l, MOTOR_L_INVERT, motor_ch_a,
+             IN1_GPIO_Port, IN1_Pin, IN2_GPIO_Port, IN2_Pin);
+  apply_side(&actual_r, &phys_sign_r, MOTOR_R_INVERT, motor_ch_b,
+             IN3_GPIO_Port, IN3_Pin, IN4_GPIO_Port, IN4_Pin);
+#endif
 }
 
 /* Move actual toward target by at most MOTOR_RAMP_STEP, never crossing 0 in one step */
@@ -111,11 +126,11 @@ static int16_t ramp(int16_t actual, int16_t target)
   return actual;
 }
 
-void motor_init(TIM_HandleTypeDef *htim, uint32_t ch_left, uint32_t ch_right)
+void motor_init(TIM_HandleTypeDef *htim, uint32_t ch_a, uint32_t ch_b)
 {
   motor_htim = htim;
-  motor_ch_l = ch_left;
-  motor_ch_r = ch_right;
+  motor_ch_a = ch_a;
+  motor_ch_b = ch_b;
 
   target_l = target_r = 0;
   actual_l = actual_r = 0;
@@ -126,8 +141,8 @@ void motor_init(TIM_HandleTypeDef *htim, uint32_t ch_left, uint32_t ch_right)
   wd_last_feed = HAL_GetTick();
 
   apply_outputs();
-  HAL_TIM_PWM_Start(motor_htim, motor_ch_l);
-  HAL_TIM_PWM_Start(motor_htim, motor_ch_r);
+  HAL_TIM_PWM_Start(motor_htim, motor_ch_a);
+  HAL_TIM_PWM_Start(motor_htim, motor_ch_b);
 }
 
 void motor_set(int left, int right)
@@ -214,11 +229,18 @@ void motor_status_str(char *buf, size_t len)
   int r = target_r;
   int pl = MOTOR_L_INVERT ? -l : l;
   int pr = MOTOR_R_INVERT ? -r : r;
+#if MOTOR_SWAP_SIDES
+  int pa = pr;   /* IN1/IN2 */
+  int pb = pl;   /* IN3/IN4 */
+#else
+  int pa = pl;
+  int pb = pr;
+#endif
 
   if ((buf == NULL) || (len == 0U))
   {
     return;
   }
   snprintf(buf, len, "L=%+d%% R=%+d%% (IN1=%d IN2=%d IN3=%d IN4=%d)",
-           l, r, pl > 0, pl < 0, pr > 0, pr < 0);
+           l, r, pa > 0, pa < 0, pb > 0, pb < 0);
 }

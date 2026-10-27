@@ -138,13 +138,14 @@ static void print_help(void)
          "  wd on|off   enable/disable %u ms watchdog\r\n"
          "  db <n>      deadband 0..90 %%\r\n"
          "  inv l|r     toggle left/right invert\r\n"
+         "  safe strict|slow  ToF error: e-stop / drive at max %d%%\r\n"
          "  link        toggle printing of upper-board link ($M / output / level)\r\n"
          "  tof <mm>    simulate ToF distance, 'tof off' = real sensor\r\n"
          "  i2c         scan I2C1 (PB8/PB9) for devices\r\n"
          "  st          status\r\n"
          "  h / ?       this help\r\n"
          "Motion commands override the upper board for %u ms.\r\n",
-         (unsigned)MOTOR_WATCHDOG_MS, (unsigned)CONSOLE_MANUAL_HOLD_MS);
+         (unsigned)MOTOR_WATCHDOG_MS, LINK_TOF_FAIL_MAX_PCT, (unsigned)CONSOLE_MANUAL_HOLD_MS);
 }
 
 static void print_status(void)
@@ -152,10 +153,12 @@ static void print_status(void)
   char buf[64];
 
   motor_status_str(buf, sizeof(buf));
-  printf("%s speed=%d%% wd=%s db=%u invL=%u invR=%u lvl=%u\r\n", buf, speed,
-         motor_watchdog_is_enabled() ? "on" : "off",
+  printf("%s speed=%d%% wd=%s db=%u invL=%u invR=%u lvl=%u safe=%s%s tofglitch=%lu tofreset=%lu\r\n",
+         buf, speed, motor_watchdog_is_enabled() ? "on" : "off",
          (unsigned)motor_deadband, (unsigned)MOTOR_L_INVERT, (unsigned)MOTOR_R_INVERT,
-         (unsigned)link_obstacle_level());
+         (unsigned)link_obstacle_level(), link_tof_fail_slow() ? "slow" : "strict",
+         link_slow_active() ? "(SLOW)" : "", (unsigned long)tof_glitch_count(),
+         (unsigned long)tof_reset_count());
 }
 
 static void manual_touch(void)
@@ -357,6 +360,8 @@ static void handle_line(char *line)
   }
   else if (strcmp(p, "inv l") == 0) { MOTOR_L_INVERT = MOTOR_L_INVERT ? 0U : 1U; }
   else if (strcmp(p, "inv r") == 0) { MOTOR_R_INVERT = MOTOR_R_INVERT ? 0U : 1U; }
+  else if (strcmp(p, "safe strict") == 0) { link_set_tof_fail_slow(false); }
+  else if (strcmp(p, "safe slow") == 0)   { link_set_tof_fail_slow(true); }
   else if (strcmp(p, "link") == 0)
   {
     link_debug_toggle();

@@ -8,14 +8,21 @@
 #include <stdio.h>
 
 /* 1 = L298N channel A (IN1/IN2 + ENA) drives the RIGHT wheels and
- *     channel B (IN3/IN4 + ENB) drives the LEFT wheels (current wiring).
- * 0 = channel A = left, channel B = right. */
+ *     channel B (IN3/IN4 + ENB) drives the LEFT wheels.
+ * 0 = channel A = left, channel B = right (current wiring: "L 30" turning
+ *     the robot left was both sides running backwards, fixed by the INVERTs). */
 #ifndef MOTOR_SWAP_SIDES
-#define MOTOR_SWAP_SIDES  1
+#define MOTOR_SWAP_SIDES  0
 #endif
 
-volatile uint8_t MOTOR_L_INVERT = 0;
-volatile uint8_t MOTOR_R_INVERT = 0;
+/* PWM duty at 100 % command; lower = slower robot at every speed */
+#ifndef MOTOR_MAX_DUTY
+#define MOTOR_MAX_DUTY    70U
+#endif
+
+/* 1 = reverse that side: both set, the robot drove backward on a forward command */
+volatile uint8_t MOTOR_L_INVERT = 1;
+volatile uint8_t MOTOR_R_INVERT = 1;
 volatile uint8_t motor_deadband = 45;   /* measured start: left 42 %, right 34 % */
 
 static TIM_HandleTypeDef *motor_htim;
@@ -33,10 +40,14 @@ static volatile bool     wd_expired;
 static volatile bool     wd_tripped;
 static volatile uint32_t wd_last_feed;
 
+static volatile int speed_limit = 100;   /* |%| cap, see motor_set_limit() */
+
 static int clamp_pct(int v)
 {
-  if (v > 100)  return 100;
-  if (v < -100) return -100;
+  int lim = speed_limit;
+
+  if (v > lim)  return lim;
+  if (v < -lim) return -lim;
   return v;
 }
 
@@ -44,15 +55,20 @@ static uint32_t pct_to_ccr(int pct)
 {
   uint32_t mag = (uint32_t)((pct < 0) ? -pct : pct);
   uint32_t db  = motor_deadband;
+  uint32_t top = MOTOR_MAX_DUTY;
 
   if (mag == 0U)
   {
     return 0U;
   }
-  if (db > 0U)
+  if (db >= top)
   {
-    /* Map 1..100 % -> db..100 % */
-    mag = db + ((mag - 1U) * (100U - db) + 49U) / 99U;
+    mag = db;
+  }
+  else
+  {
+    /* Map 1..100 % -> db..MOTOR_MAX_DUTY % */
+    mag = db + ((mag - 1U) * (top - db) + 49U) / 99U;
   }
   /* 100 % -> ARR+1, which keeps PWM mode 1 output high for the whole period */
   return mag * (__HAL_TIM_GET_AUTORELOAD(motor_htim) + 1U) / 100U;
@@ -150,6 +166,21 @@ void motor_set(int left, int right)
   target_l = (int16_t)clamp_pct(left);
   target_r = (int16_t)clamp_pct(right);
   motor_feed();
+}
+
+void motor_set_limit(int pct)
+{
+  if (pct > 100) pct = 100;
+  if (pct < 0)   pct = 0;
+  speed_limit = pct;
+  /* re-clamp a running command; the ramp slows it down smoothly */
+  target_l = (int16_t)clamp_pct(target_l);
+  target_r = (int16_t)clamp_pct(target_r);
+}
+
+int motor_get_limit(void)
+{
+  return speed_limit;
 }
 
 void motor_get_target(int *left, int *right)

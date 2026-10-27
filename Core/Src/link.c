@@ -9,8 +9,10 @@
   *   TX:    $O,level,dist_mm*XX     every 200 ms and on every level change
   *
   *   Drive priority:
-  *     level 3            -> motor_estop(), ignores everything (console too);
-  *                           a ToF sensor error also counts as level 3
+  *     level 3            -> motor_estop(), ignores everything (console too)
+  *     ToF sensor error   -> "safe strict": same as level 3
+  *                           "safe slow":   all wheels capped at LINK_TOF_FAIL_MAX_PCT
+  *                           (both report $O,3,0 to the upper board)
   *     level 2, mode != 2 -> no forward (left + right > 0 -> 0, 0)
   *     level 1, mode != 2 -> forward limited to LINK_LEVEL1_MAX_PCT per wheel
   *     mode 0             -> motor_set(0, 0)
@@ -51,9 +53,12 @@ static char     cmd_text[LINK_LINE_MAX + 1U];
 /* Values actually given to motor_set() by the link */
 static int      out_left, out_right;
 
-static uint8_t  obst_level;
+static uint8_t  obst_level;   /* reported in $O (3 on a sensor error) */
 static uint16_t obst_dist;
 static uint32_t tof_tick;
+
+static bool     fail_slow = (LINK_TOF_FAIL_SLOW_DEFAULT != 0);
+static bool     slow_active;  /* sensor error while fail_slow */
 
 static char     tx_buf[24];
 static bool     tx_pending;
@@ -157,6 +162,36 @@ static bool cmd_fresh(void)
 
 /* --------------------------------------------------------------- control */
 
+/* Level the drive rules use: in slow mode a sensor error is not level 3,
+ * the speed cap from motor_set_limit() protects instead. */
+static uint8_t drive_level(void)
+{
+  return slow_active ? 0U : obst_level;
+}
+
+/* Enter/leave slow mode as the sensor fails/recovers; true on a change */
+static bool update_slow(void)
+{
+  bool want = fail_slow && !tof_ok();
+
+  if (want == slow_active)
+  {
+    return false;
+  }
+  slow_active = want;
+  motor_set_limit(want ? LINK_TOF_FAIL_MAX_PCT : 100);
+  tof_set_retry_ms(want ? LINK_TOF_RETRY_SLOW_MS : TOF_RETRY_MS);
+  if (want)
+  {
+    printf("\r\nLINK: ToF failed, driving slow (max %d%%)\r\n", LINK_TOF_FAIL_MAX_PCT);
+  }
+  else
+  {
+    printf("\r\nLINK: slow mode off\r\n");
+  }
+  return true;
+}
+
 static void stop_for_level3(void)
 {
   int l, r;
@@ -174,8 +209,9 @@ static void apply_drive(void)
 {
   int l = cmd_left;
   int r = cmd_right;
+  uint8_t lvl = drive_level();
 
-  if (obst_level >= 3U)
+  if (lvl >= 3U)
   {
     stop_for_level3();
     return;
@@ -187,12 +223,12 @@ static void apply_drive(void)
   }
   else if (cmd_mode != MODE_DOCKING)
   {
-    if ((obst_level == 2U) && ((l + r) > 0))
+    if ((lvl == 2U) && ((l + r) > 0))
     {
       l = 0;
       r = 0;
     }
-    else if (obst_level == 1U)
+    else if (lvl == 1U)
     {
       if (l > LINK_LEVEL1_MAX_PCT) l = LINK_LEVEL1_MAX_PCT;
       if (r > LINK_LEVEL1_MAX_PCT) r = LINK_LEVEL1_MAX_PCT;
@@ -304,19 +340,48 @@ static uint8_t level_of(uint32_t mm)
   return 0U;
 }
 
-/* Rise immediately, drop only when LINK_HYST_MM further than the threshold.
+/* Rise immediately, drop only when LINK_HYST_MM further than the threshold
+ * for LINK_LEVEL_DROP_MS (stops level flicker and repeated voice alerts).
  * A sensor error counts as level 3. */
 static uint8_t level_update(uint32_t mm, uint8_t cur)
 {
+  static bool     drop_pending;
+  static uint32_t drop_since;
+  static bool     was_error;
   uint8_t raw = tof_ok() ? level_of(mm) : 3U;
   uint8_t hold;
+  uint32_t now = HAL_GetTick();
 
+  if (was_error && tof_ok())
+  {
+    /* level 3 came from the sensor error, not a distance: drop at once */
+    was_error = false;
+    drop_pending = false;
+    return raw;
+  }
+  was_error = !tof_ok();
   if (raw >= cur)
   {
+    drop_pending = false;
     return raw;
   }
   hold = level_of((mm > LINK_HYST_MM) ? (mm - LINK_HYST_MM) : 0U);
-  return (hold < cur) ? hold : cur;
+  if (hold >= cur)
+  {
+    drop_pending = false;
+    return cur;
+  }
+  if (!drop_pending)
+  {
+    drop_pending = true;
+    drop_since = now;
+  }
+  if ((now - drop_since) < LINK_LEVEL_DROP_MS)
+  {
+    return cur;
+  }
+  drop_pending = false;
+  return hold;
 }
 
 /* -------------------------------------------------------------------- TX */
@@ -382,8 +447,12 @@ void link_poll(void)
       tx_pending = true;
     }
   }
+  if (update_slow())
+  {
+    level_changed = true;
+  }
 
-  if (obst_level >= 3U)
+  if (drive_level() >= 3U)
   {
     stop_for_level3();   /* also blocks console commands */
   }
@@ -421,8 +490,9 @@ void link_poll(void)
     {
       printf("LINK rx=none");
     }
-    printf(" lvl=%u dist=%u%s ok=%lu bad=%lu%s\r\n", (unsigned)obst_level,
-           (unsigned)obst_dist, tof_ok() ? "" : " TOF-ERR",
+    printf(" lvl=%u dist=%u raw=%u%s%s ok=%lu bad=%lu%s\r\n", (unsigned)obst_level,
+           (unsigned)obst_dist, (unsigned)tof_raw_mm(), tof_ok() ? "" : " TOF-ERR",
+           slow_active ? " SLOW" : "",
            (unsigned long)rx_ok, (unsigned long)rx_bad,
            console_manual_active() ? " [console]" : "");
   }
@@ -442,4 +512,20 @@ bool link_debug_enabled(void)
 uint8_t link_obstacle_level(void)
 {
   return obst_level;
+}
+
+void link_set_tof_fail_slow(bool slow)
+{
+  fail_slow = slow;
+  (void)update_slow();
+}
+
+bool link_tof_fail_slow(void)
+{
+  return fail_slow;
+}
+
+bool link_slow_active(void)
+{
+  return slow_active;
 }

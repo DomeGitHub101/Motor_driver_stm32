@@ -28,4 +28,7 @@ int tof0_start_continuous(tof0_t *d);
 /* Non-blocking: 0 = new sample in *mm, -1 = not ready yet, > 0 = I2C error */
 int tof0_poll_mm(tof0_t *d, uint16_t *mm);
 
+/* Read one register (debug), 0 = OK */
+int tof0_read_reg(tof0_t *d, uint8_t reg, uint8_t *v);
+
 #endif

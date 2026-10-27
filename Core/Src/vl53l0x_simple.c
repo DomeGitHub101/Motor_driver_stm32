@@ -3,7 +3,9 @@
 #include "vl53l0x_simple.h"
 #include "i2c.h"
 
-#define TO_MS 50
+#define TO_MS 10   /* short: a noisy transfer must not stall the main loop */
+#define WAIT_MS 100   /* register poll limit (calibration, SPAD info): bounds a
+                         failed re-init, which blocks the main loop */
 
 static uint8_t cur_addr = TOF0_DEFAULT_ADDR;   /* address ของตัวที่กำลังคุยอยู่ */
 
@@ -38,7 +40,7 @@ static int wait_reg(uint8_t reg, uint8_t mask, uint8_t want) {
 	for (;;) {
 		if (rd8(reg, &v)) return 1;
 		if ((v & mask) == want) return 0;
-		if (HAL_GetTick() - t0 > 500) return 2;
+		if (HAL_GetTick() - t0 > WAIT_MS) return 2;
 	}
 }
 static int wait_reg_nonzero(uint8_t reg, uint8_t mask) {
@@ -47,7 +49,7 @@ static int wait_reg_nonzero(uint8_t reg, uint8_t mask) {
 	for (;;) {
 		if (rd8(reg, &v)) return 1;
 		if (v & mask) return 0;
-		if (HAL_GetTick() - t0 > 500) return 2;
+		if (HAL_GetTick() - t0 > WAIT_MS) return 2;
 	}
 }
 
@@ -197,6 +199,11 @@ int tof0_poll_mm(tof0_t *d, uint16_t *mm) {
 	if (rd16(0x14 + 10, mm)) return 2;
 	if (wr8(0x0B, 0x01)) return 3;                /* clear interrupt */
 	return 0;
+}
+
+int tof0_read_reg(tof0_t *d, uint8_t reg, uint8_t *v) {
+	cur_addr = d->addr;
+	return rd8(reg, v);
 }
 
 /* เปลี่ยน I2C address ของเซนเซอร์ (8-bit address เช่น 0x54)

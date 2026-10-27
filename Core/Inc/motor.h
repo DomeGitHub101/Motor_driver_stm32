@@ -32,6 +32,8 @@ extern volatile uint8_t motor_deadband;
 void motor_init(TIM_HandleTypeDef *htim, uint32_t ch_a, uint32_t ch_b);  /* ENA, ENB channels */
 void motor_set(int left, int right);       /* -100..100 %, negative = reverse */
 void motor_get_target(int *left, int *right);
+void motor_set_limit(int pct);             /* cap |left|,|right| to pct (100 = none) */
+int  motor_get_limit(void);
 void motor_tick(void);                     /* call from 20 ms timer ISR */
 void motor_estop(void);                    /* immediate stop, no ramp */
 
